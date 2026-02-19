@@ -1,5 +1,6 @@
 'use client';
 
+import { useState, useCallback } from 'react';
 import Script from 'next/script';
 
 // Dashboard body HTML — rendered as-is to preserve all inline event handlers
@@ -752,19 +753,275 @@ const DASHBOARD_HTML = String.raw`
 
 `;
 
+interface AIHighlight {
+  metric: string;
+  status: 'red' | 'yellow' | 'green';
+  message: string;
+  action: string;
+  section: string;
+}
+
+declare global {
+  interface Window {
+    getDashboardData: () => Record<string, unknown>;
+    applyAIHighlights: (highlights: AIHighlight[]) => void;
+  }
+}
+
 export default function DashboardPage() {
+  const [aiOpen, setAiOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [aiMode, setAiMode] = useState<'highlights' | 'profit_master' | null>(null);
+  const [highlights, setHighlights] = useState<AIHighlight[]>([]);
+  const [report, setReport] = useState('');
+  const [error, setError] = useState('');
+
+  const runHighlights = useCallback(async () => {
+    setLoading(true);
+    setAiMode('highlights');
+    setError('');
+    setReport('');
+    try {
+      const data = typeof window !== 'undefined' && window.getDashboardData
+        ? window.getDashboardData()
+        : {};
+      const res = await fetch('/api/ai', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data, mode: 'highlights' }),
+      });
+      const json = await res.json();
+      if (json.error) throw new Error(json.error);
+      const hl: AIHighlight[] = json.highlights || [];
+      setHighlights(hl);
+      if (typeof window !== 'undefined' && window.applyAIHighlights) {
+        window.applyAIHighlights(hl);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Something went wrong');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const runProfitMaster = useCallback(async () => {
+    setLoading(true);
+    setAiMode('profit_master');
+    setError('');
+    setHighlights([]);
+    try {
+      const data = typeof window !== 'undefined' && window.getDashboardData
+        ? window.getDashboardData()
+        : {};
+      const res = await fetch('/api/ai', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data, mode: 'profit_master' }),
+      });
+      const json = await res.json();
+      if (json.error) throw new Error(json.error);
+      setReport(json.report || '');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Something went wrong');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const statusColor = (status: 'red' | 'yellow' | 'green') => {
+    if (status === 'red') return '#dc2626';
+    if (status === 'yellow') return '#d97706';
+    return '#16a34a';
+  };
+
+  const statusIcon = (status: 'red' | 'yellow' | 'green') => {
+    if (status === 'red') return '⚠️';
+    if (status === 'yellow') return '⚡';
+    return '✅';
+  };
+
   return (
     <>
-      {/* Dashboard shell — all dynamic content is injected by dashboard.js */}
+      {/* Dashboard shell */}
       <div dangerouslySetInnerHTML={{ __html: DASHBOARD_HTML }} />
 
-      {/* Dashboard logic — loaded after page is interactive so DOM is ready.
-          Runs as a classic (non-module) script so all functions are global,
-          matching the onclick/onchange attribute strings in the HTML above. */}
-      <Script
-        src="/dashboard.js"
-        strategy="afterInteractive"
-      />
+      {/* Dashboard logic */}
+      <Script src="/dashboard.js" strategy="afterInteractive" />
+      <Script src="/ai-dashboard.js" strategy="afterInteractive" />
+
+      {/* ====== AI ADVISOR FLOATING BUTTON ====== */}
+      <button
+        onClick={() => setAiOpen(true)}
+        style={{
+          position: 'fixed', bottom: '24px', right: '24px', zIndex: 9998,
+          background: 'linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%)',
+          color: '#fff', border: 'none', borderRadius: '50px',
+          padding: '12px 20px', cursor: 'pointer', fontWeight: '700',
+          fontSize: '14px', boxShadow: '0 4px 20px rgba(124,58,237,0.4)',
+          display: 'flex', alignItems: 'center', gap: '8px',
+        }}
+        title="Open AI Advisor"
+      >
+        ✨ AI Advisor
+      </button>
+
+      {/* ====== BACKDROP ====== */}
+      {aiOpen && (
+        <div
+          onClick={() => setAiOpen(false)}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)',
+            zIndex: 9998, backdropFilter: 'blur(2px)',
+          }}
+        />
+      )}
+
+      {/* ====== AI SLIDE-OUT PANEL ====== */}
+      <div style={{
+        position: 'fixed', top: 0, right: 0, height: '100vh',
+        width: '420px', maxWidth: '95vw',
+        background: '#fff', boxShadow: '-4px 0 32px rgba(0,0,0,0.15)',
+        zIndex: 9999, display: 'flex', flexDirection: 'column',
+        transform: aiOpen ? 'translateX(0)' : 'translateX(100%)',
+        transition: 'transform 0.3s cubic-bezier(0.4,0,0.2,1)',
+      }}>
+        {/* Header */}
+        <div style={{
+          background: 'linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%)',
+          padding: '20px', color: '#fff',
+          display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
+          flexShrink: 0,
+        }}>
+          <div>
+            <div style={{ fontWeight: '800', fontSize: '18px' }}>✨ AI Advisor</div>
+            <div style={{ fontSize: '12px', opacity: 0.85, marginTop: '3px' }}>Powered by Claude • Custom Contracting Inc</div>
+          </div>
+          <button
+            onClick={() => setAiOpen(false)}
+            style={{
+              background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff',
+              borderRadius: '8px', padding: '6px 10px', cursor: 'pointer',
+              fontSize: '16px', fontWeight: '700', lineHeight: 1,
+            }}
+          >✕</button>
+        </div>
+
+        {/* Action buttons */}
+        <div style={{ padding: '14px', borderBottom: '1px solid #e5e7eb', flexShrink: 0, display: 'flex', gap: '10px' }}>
+          <button
+            onClick={runHighlights}
+            disabled={loading}
+            style={{
+              flex: 1, padding: '12px 8px',
+              background: loading && aiMode === 'highlights'
+                ? '#ddd6fe'
+                : 'linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%)',
+              color: '#fff', border: 'none', borderRadius: '10px',
+              cursor: loading ? 'not-allowed' : 'pointer',
+              fontWeight: '700', fontSize: '13px',
+              opacity: loading && aiMode !== 'highlights' ? 0.55 : 1,
+            }}
+          >
+            {loading && aiMode === 'highlights' ? '⏳ Scanning...' : '🔍 Scan Dashboard'}
+          </button>
+          <button
+            onClick={runProfitMaster}
+            disabled={loading}
+            style={{
+              flex: 1, padding: '12px 8px',
+              background: loading && aiMode === 'profit_master'
+                ? '#a7f3d0'
+                : 'linear-gradient(135deg, #059669 0%, #0d9488 100%)',
+              color: '#fff', border: 'none', borderRadius: '10px',
+              cursor: loading ? 'not-allowed' : 'pointer',
+              fontWeight: '700', fontSize: '13px',
+              opacity: loading && aiMode !== 'profit_master' ? 0.55 : 1,
+            }}
+          >
+            {loading && aiMode === 'profit_master' ? '⏳ Analyzing...' : '🚀 Profit Master'}
+          </button>
+        </div>
+
+        {/* Content area */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '16px' }}>
+
+          {/* Empty state */}
+          {!loading && !error && highlights.length === 0 && !report && (
+            <div style={{ textAlign: 'center', padding: '40px 20px', color: '#6b7280' }}>
+              <div style={{ fontSize: '44px', marginBottom: '14px' }}>🤖</div>
+              <div style={{ fontWeight: '700', fontSize: '15px', color: '#374151', marginBottom: '10px' }}>Your AI Financial Advisor</div>
+              <div style={{ fontSize: '13px', lineHeight: '1.7', color: '#4b5563' }}>
+                <strong style={{ color: '#7c3aed' }}>🔍 Scan Dashboard</strong> — Highlights critical issues with red/yellow/green badges directly on your dashboard.<br /><br />
+                <strong style={{ color: '#059669' }}>🚀 Profit Master</strong> — Full profit optimization report with specific action steps to grow your bottom line.
+              </div>
+            </div>
+          )}
+
+          {/* Loading */}
+          {loading && (
+            <div style={{ textAlign: 'center', padding: '40px 20px' }}>
+              <div style={{ fontSize: '36px', marginBottom: '14px' }}>⏳</div>
+              <div style={{ fontWeight: '600', fontSize: '14px', color: '#374151' }}>
+                {aiMode === 'highlights' ? 'Scanning for insights...' : 'Generating profit report...'}
+              </div>
+              <div style={{ fontSize: '12px', color: '#9ca3af', marginTop: '6px' }}>This takes 5–15 seconds</div>
+            </div>
+          )}
+
+          {/* Error */}
+          {error && !loading && (
+            <div style={{
+              background: '#fef2f2', border: '1px solid #fecaca',
+              borderRadius: '10px', padding: '14px', marginBottom: '12px',
+            }}>
+              <div style={{ fontWeight: '700', color: '#dc2626', marginBottom: '4px', fontSize: '13px' }}>⚠️ Error</div>
+              <div style={{ fontSize: '12px', color: '#7f1d1d', lineHeight: '1.5' }}>{error}</div>
+            </div>
+          )}
+
+          {/* Highlights */}
+          {!loading && highlights.length > 0 && (
+            <div>
+              <div style={{ fontWeight: '700', fontSize: '13px', color: '#374151', marginBottom: '12px' }}>
+                {highlights.length} insight{highlights.length !== 1 ? 's' : ''} found
+                <span style={{ fontSize: '11px', fontWeight: '400', color: '#9ca3af', marginLeft: '8px' }}>Badges applied to dashboard ↗</span>
+              </div>
+              {highlights.map((h, i) => (
+                <div key={i} style={{
+                  borderLeft: `4px solid ${statusColor(h.status)}`,
+                  border: `1px solid ${statusColor(h.status)}25`,
+                  padding: '10px 12px', marginBottom: '8px',
+                  borderRadius: '8px',
+                  background: h.status === 'red' ? '#fef2f2' : h.status === 'yellow' ? '#fffbeb' : '#f0fdf4',
+                }}>
+                  <div style={{ fontWeight: '700', fontSize: '12px', color: statusColor(h.status) }}>
+                    {statusIcon(h.status)} {h.metric}
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#374151', marginTop: '3px', lineHeight: '1.5' }}>{h.message}</div>
+                  <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '6px', padding: '5px 7px', background: 'rgba(0,0,0,0.03)', borderRadius: '4px' }}>
+                    💡 {h.action}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Profit Master report */}
+          {!loading && report && (
+            <div>
+              <div style={{ fontWeight: '700', fontSize: '13px', color: '#374151', marginBottom: '12px' }}>
+                🚀 Profit Master Report
+              </div>
+              <div style={{
+                fontSize: '12.5px', lineHeight: '1.7', color: '#374151',
+                whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+              }}>
+                {report}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
     </>
   );
 }
